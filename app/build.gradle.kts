@@ -1,20 +1,35 @@
 plugins {
-    kotlin("jvm") version "2.0.0"
-    application
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
 }
 
-repositories {
-    mavenCentral()
+android {
+    namespace = "com.squig.equalizer"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.squig.equalizer"
+        minSdk = 26
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0"
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = "17"
+    }
 }
 
 dependencies {
-    testImplementation(kotlin("test"))
-}
-
-application {
-    mainClass.set("com.squig.equalizer.AppKt")
-}
-
-tasks.test {
-    useJUnitPlatform()
+    implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.appcompat:appcompat:1.6.1")
 }

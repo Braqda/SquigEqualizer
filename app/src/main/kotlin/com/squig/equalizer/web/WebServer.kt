@@ -5,13 +5,19 @@ import com.sun.net.httpserver.HttpHandler
 import com.sun.net.httpserver.HttpExchange
 import java.net.InetSocketAddress
 import java.io.OutputStream
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.util.concurrent.Executors
+import android.content.Context
+import android.content.Intent
+import com.squig.equalizer.service.AudioEqualizerService
 
-class WebServer(private val port: Int = 8080) {
+class WebServer(private val context: Context? = null, private val port: Int = 8080) {
 
     fun start() {
         val server = HttpServer.create(InetSocketAddress(port), 0)
         server.createContext("/", DashboardHandler())
+        server.createContext("/api/apply-eq", ApplyEqHandler(context))
         server.executor = Executors.newFixedThreadPool(4)
         server.start()
         println("=====================================================")
@@ -27,461 +33,531 @@ class WebServer(private val port: Int = 8080) {
             <head>
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>SquigEqualizer</title>
+                <title>Magnitude response</title>
                 <style>
                     :root {
-                        --bg-main: #121216;
-                        --bg-card: #1a1a22;
-                        --bg-input: #242430;
-                        --accent: #7c3aed;
-                        --accent-hover: #6d28d9;
-                        --text-main: #f3f4f6;
-                        --text-dim: #9ca3af;
-                        --border: #2d2d3a;
-                        --target-color: #ef4444;
-                        --iem-color: #3b82f6;
+                        --bg-main: #f6f0f8;
+                        --bg-card: #fcf8fd;
+                        --bg-input: #eee7f2;
+                        --accent: #5e399b;
+                        --text-main: #1d1a22;
+                        --text-dim: #79747e;
+                        --border: #e8e0ec;
+                        --grid-line: #ded7e3;
                     }
                     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-                    body { background: var(--bg-main); color: var(--text-main); min-height: 100vh; padding: 16px; }
-                    
-                    /* Header */
-                    .app-header {
-                        display: flex;
-                        justify-content: space-between;
-                        align-items: center;
-                        padding: 14px 18px;
-                        background: var(--bg-card);
-                        border: 1px solid var(--border);
-                        border-radius: 12px;
-                        margin-bottom: 24px;
-                    }
-                    .app-title { font-size: 18px; font-weight: 700; }
-                    .icon-btn { background: transparent; border: none; color: var(--text-dim); font-size: 20px; cursor: pointer; }
+                    body { background: var(--bg-main); color: var(--text-main); min-height: 100vh; padding: 12px; }
 
-                    /* Initial State Screen */
-                    .initial-container {
-                        display: flex;
-                        flex-direction: column;
-                        align-items: center;
-                        justify-content: center;
-                        padding: 60px 20px;
-                        text-align: center;
-                    }
-                    .btn-add-main {
-                        background: var(--accent);
-                        color: #fff;
-                        border: none;
-                        padding: 16px 32px;
-                        font-size: 16px;
-                        font-weight: 700;
-                        border-radius: 12px;
-                        cursor: pointer;
-                        box-shadow: 0 4px 14px rgba(124, 58, 237, 0.4);
-                        transition: transform 0.2s, background 0.2s;
-                    }
-                    .btn-add-main:hover { background: var(--accent-hover); transform: translateY(-2px); }
+                    .top-nav { display: flex; align-items: center; gap: 12px; padding: 8px 4px 16px 4px; }
+                    .back-btn { font-size: 22px; cursor: pointer; border: none; background: transparent; color: var(--text-main); }
+                    .page-title { font-size: 20px; font-weight: 500; }
 
-                    /* Profile List View */
-                    .profile-card {
-                        background: var(--bg-card);
-                        border: 1px solid var(--border);
-                        border-radius: 12px;
-                        padding: 16px;
-                        margin-bottom: 12px;
-                        cursor: pointer;
-                        display: flex;
-                        justify-content: space-between;
-                        align-items: center;
+                    .toolbar { display: flex; gap: 8px; margin-bottom: 16px; overflow-x: auto; }
+                    .tool-btn {
+                        background: var(--bg-input); color: var(--accent); border: none;
+                        padding: 10px 16px; border-radius: 12px; font-size: 13px; font-weight: 600;
+                        cursor: pointer; display: flex; align-items: center; gap: 8px; flex: 1; justify-content: center;
+                        white-space: nowrap;
                     }
-                    .profile-name { font-weight: 600; font-size: 16px; }
-                    .profile-sub { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
 
-                    /* Modal Dialog */
+                    .card {
+                        background: var(--bg-card); border-radius: 20px; padding: 18px;
+                        margin-bottom: 16px; border: 1px solid var(--border);
+                    }
+                    .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+                    .card-title { font-size: 16px; font-weight: 600; color: var(--text-main); }
+
+                    .profile-item {
+                        display: flex; justify-content: space-between; align-items: center;
+                        padding: 12px 0; border-bottom: 1px solid var(--border);
+                    }
+                    .profile-item:last-child { border-bottom: none; }
+                    .profile-info { flex: 1; cursor: pointer; }
+                    .profile-name { font-weight: 600; font-size: 15px; }
+                    .profile-sub { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+
+                    .switch { position: relative; display: inline-block; width: 48px; height: 26px; }
+                    .switch input { opacity: 0; width: 0; height: 0; }
+                    .slider {
+                        position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+                        background-color: #d1c5d8; transition: .3s; border-radius: 26px;
+                    }
+                    .slider:before {
+                        position: absolute; content: ""; height: 20px; width: 20px; left: 3px; bottom: 3px;
+                        background-color: white; transition: .3s; border-radius: 50%;
+                    }
+                    input:checked + .slider { background-color: var(--accent); }
+                    input:checked + .slider:before { transform: translateX(22px); }
+
+                    .node-box-empty {
+                        min-height: 140px; display: flex; flex-direction: column;
+                        align-items: center; justify-content: center; color: var(--text-dim); font-size: 14px;
+                    }
+                    .node-dots-icon { font-size: 24px; letter-spacing: 2px; color: var(--text-dim); margin-bottom: 6px; }
+
+                    .node-grid-list {
+                        display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+                        gap: 8px; margin-top: 10px; max-height: 180px; overflow-y: auto;
+                    }
+                    .node-chip {
+                        background: var(--bg-input); border-radius: 8px; padding: 6px 10px;
+                        font-size: 12px; font-weight: 500; display: flex; justify-content: space-between;
+                    }
+
+                    .graph-container { position: relative; width: 100%; height: 180px; margin-top: 10px; }
+                    canvas { width: 100%; height: 100%; border-radius: 8px; display: block; }
+
+                    .eq-grid { display: flex; gap: 6px; overflow-x: auto; padding: 12px 0; margin-top: 12px; }
+                    .eq-col { display: flex; flex-direction: column; align-items: center; min-width: 28px; }
+                    .eq-val { font-size: 9px; color: var(--text-dim); margin-bottom: 4px; }
+                    .eq-slider {
+                        writing-mode: bt-lr; -webkit-appearance: slider-vertical;
+                        width: 14px; height: 80px;
+                    }
+                    .eq-freq { font-size: 8px; color: var(--text-dim); margin-top: 4px; }
+
+                    .post-gain-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+                    .post-gain-slider { flex: 1; -webkit-appearance: none; height: 4px; background: #dcd3e2; border-radius: 2px; }
+                    .post-gain-slider::-webkit-slider-thumb {
+                        -webkit-appearance: none; width: 20px; height: 20px; border-radius: 50%;
+                        background: var(--accent); cursor: pointer;
+                    }
+
                     .modal-backdrop {
-                        position: fixed;
-                        top: 0; left: 0; right: 0; bottom: 0;
-                        background: rgba(0,0,0,0.8);
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        padding: 16px;
-                        z-index: 1000;
+                        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+                        background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center;
+                        padding: 16px; z-index: 1000;
                     }
-                    .modal-content {
-                        background: var(--bg-card);
-                        border: 1px solid var(--border);
-                        border-radius: 16px;
-                        width: 100%;
-                        max-width: 650px;
-                        max-height: 90vh;
-                        overflow-y: auto;
-                        padding: 20px;
+                    .modal {
+                        background: var(--bg-card); border-radius: 20px; padding: 20px;
+                        width: 100%; max-width: 520px; border: 1px solid var(--border);
                     }
-                    .modal-header {
-                        display: flex;
-                        justify-content: space-between;
-                        align-items: center;
-                        margin-bottom: 16px;
+                    .modal-title { font-size: 18px; font-weight: 600; margin-bottom: 14px; }
+                    select, input[type="text"], textarea {
+                        width: 100%; padding: 12px; border-radius: 12px; border: 1px solid var(--border);
+                        background: var(--bg-input); font-size: 13px; margin-bottom: 12px; color: var(--text-main);
                     }
-
-                    .form-group { margin-bottom: 16px; position: relative; }
-                    label { display: block; font-size: 12px; text-transform: uppercase; color: var(--text-dim); margin-bottom: 6px; }
-                    input[type="text"], select {
-                        width: 100%;
-                        padding: 12px;
-                        background: var(--bg-input);
-                        border: 1px solid var(--border);
-                        border-radius: 8px;
-                        color: #fff;
-                        font-size: 14px;
-                    }
-
-                    /* Search Dropdown Results List */
-                    .search-results {
-                        position: absolute;
-                        top: 100%;
-                        left: 0;
-                        right: 0;
-                        max-height: 180px;
-                        overflow-y: auto;
-                        background: var(--bg-input);
-                        border: 1px solid var(--border);
-                        border-radius: 0 0 8px 8px;
-                        z-index: 10;
-                    }
-                    .search-item {
-                        padding: 10px 14px;
-                        font-size: 13px;
-                        cursor: pointer;
-                        border-bottom: 1px solid rgba(255,255,255,0.05);
-                    }
-                    .search-item:hover {
-                        background: var(--accent);
-                        color: #fff;
-                    }
-
-                    /* Preamp Control */
-                    .preamp-box {
-                        background: var(--bg-input);
-                        border: 1px solid var(--border);
-                        padding: 12px 16px;
-                        border-radius: 8px;
-                        display: flex;
-                        align-items: center;
-                        gap: 12px;
-                    }
-                    .preamp-val { font-weight: 700; color: #10b981; font-size: 16px; min-width: 70px; text-align: right; }
-
-                    /* Graph Canvas */
-                    canvas {
-                        width: 100%;
-                        height: 220px;
-                        background: #0d0d12;
-                        border: 1px solid var(--border);
-                        border-radius: 8px;
-                        margin-top: 8px;
-                    }
-
-                    .legend { display: flex; gap: 16px; font-size: 12px; margin-top: 8px; }
-                    .legend-item { display: flex; align-items: center; gap: 6px; }
-                    .dot-target { width: 10px; height: 10px; background: var(--target-color); border-radius: 50%; }
-                    .dot-iem { width: 10px; height: 10px; background: var(--iem-color); border-radius: 50%; }
+                    textarea { height: 100px; font-family: monospace; }
+                    .btn-primary { background: var(--accent); color: #fff; border: none; padding: 12px 20px; border-radius: 12px; font-weight: 600; cursor: pointer; }
+                    .btn-secondary { background: var(--bg-input); color: var(--text-main); border: none; padding: 12px 20px; border-radius: 12px; font-weight: 600; cursor: pointer; margin-right: 8px; }
 
                     .hidden { display: none !important; }
-                    .btn-secondary { background: var(--bg-input); border: 1px solid var(--border); color: #fff; padding: 10px 16px; border-radius: 8px; cursor: pointer; }
                 </style>
             </head>
             <body>
 
-                <!-- App Header -->
-                <div class="app-header">
-                    <span class="app-title">SquigEqualizer</span>
-                    <button class="icon-btn" onclick="openSettings()">⚙️</button>
+                <div id="screenProfiles">
+                    <div class="top-nav">
+                        <span class="page-title">SquigEqualizer</span>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">Profiles (<span id="profileCount">0</span>/5)</span>
+                            <button class="tool-btn" style="flex:0; padding:6px 16px;" onclick="openMagnitudeEditor(-1)">+ Add Profile</button>
+                        </div>
+                        <div id="profilesList"></div>
+                    </div>
                 </div>
 
-                <!-- Initial Empty View -->
-                <div id="initialView" class="initial-container">
-                    <button class="btn-add-main" onclick="openProfileModal()">+ Add Profile</button>
+                <div id="screenMagnitude" class="hidden">
+                    <div class="top-nav">
+                        <button class="back-btn" onclick="showProfilesScreen()">←</button>
+                        <span class="page-title">Magnitude response</span>
+                    </div>
+
+                    <div class="toolbar">
+                        <button class="tool-btn" onclick="resetCurrentProfile()">🗑 Reset</button>
+                        <button class="tool-btn" onclick="openAutoEqModal()">📥 AutoEQ profiles</button>
+                        <button class="tool-btn" onclick="openStringModal()">✏️ Edit as string</button>
+                    </div>
+
+                    <div class="card">
+                        <span class="card-title">Node list</span>
+                        <div id="nodeListContainer">
+                            <div class="node-box-empty">
+                                <div class="node-dots-icon">◦—◦</div>
+                                <span>No nodes defined</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <span class="card-title">Preview</span>
+                        <div class="graph-container">
+                            <canvas id="previewCanvas"></canvas>
+                        </div>
+                        <div id="eqSlidersGrid" class="eq-grid"></div>
+                    </div>
+
+                    <div class="card">
+                        <span class="card-title" style="display:block; margin-bottom:12px;">Post gain</span>
+                        <div class="post-gain-row">
+                            <input type="range" id="postGainSlider" class="post-gain-slider" min="-20" max="10" step="0.25" value="0" oninput="updatePostGain(this.value)">
+                            <span id="postGainVal" style="font-weight:600; font-size:15px; min-width:65px; text-align:right;">0.00dB</span>
+                        </div>
+                    </div>
+
+                    <div style="display:flex; justify-content:flex-end; margin-top:12px;">
+                        <button class="btn-primary" style="width:100%; padding:14px; font-size:15px;" onclick="saveMagnitudeProfile()">Save Profile</button>
+                    </div>
                 </div>
 
-                <!-- Profile List Container -->
-                <div id="profileList" class="hidden"></div>
+                <div id="autoEqModal" class="modal-backdrop hidden">
+                    <div class="modal">
+                        <div class="modal-title">AutoEQ Import</div>
+                        
+                        <label style="font-size:11px; color:var(--text-dim); text-transform:uppercase;">Select IEM Model</label>
+                        <select id="autoEqIem" onchange="updateAutoEqCurves()">
+                            <option value="KZ Castor Harman (0000)">KZ Castor Harman (0000 - Standard)</option>
+                            <option value="KZ Castor Harman (1000)">KZ Castor Harman (1000 - Sub-Bass Boost)</option>
+                            <option value="KZ Castor Harman (1111)">KZ Castor Harman (1111 - All Switches On)</option>
+                            <option value="KZ Castor Bass (1100)">KZ Castor Bass (1100 - Max Bass)</option>
+                            <option value="7Hz Salnotes Zero">7Hz Salnotes Zero</option>
+                            <option value="Moondrop Chu II">Moondrop Chu II</option>
+                        </select>
 
-                <!-- Profile Details & Squig.link Modal -->
-                <div id="profileModal" class="modal-backdrop hidden">
-                    <div class="modal-content">
-                        <div class="modal-header">
-                            <h3 id="modalTitle">Profile Details</h3>
-                            <button class="icon-btn" onclick="closeProfileModal()">✕</button>
+                        <label style="font-size:11px; color:var(--text-dim); text-transform:uppercase;">Target Curve</label>
+                        <select id="autoEqTarget" onchange="updateAutoEqCurves()">
+                            <option value="Harman 2019 IE">Harman 2019 IE Target</option>
+                            <option value="IEF Neutral">IEF Neutral Target</option>
+                            <option value="JM-1 Target">JM-1 Target</option>
+                        </select>
+
+                        <label style="font-size:11px; color:var(--text-dim); text-transform:uppercase;">Response Curves (Stock IEM vs Target)</label>
+                        <div style="width:100%; height:130px; margin-bottom:12px;">
+                            <canvas id="autoEqCanvas"></canvas>
                         </div>
 
-                        <div class="form-group">
-                            <label>Profile Name</label>
-                            <input type="text" id="profileName" placeholder="e.g. My KZ Castor Harman EQ">
+                        <div style="display:flex; justify-content:flex-end;">
+                            <button class="btn-secondary" onclick="closeModal('autoEqModal')">Cancel</button>
+                            <button class="btn-primary" onclick="importAutoEqValues()">Import Values</button>
                         </div>
+                    </div>
+                </div>
 
-                        <!-- Squig.link IEM Search -->
-                        <div class="form-group">
-                            <label>Search Squig.link IEM Database</label>
-                            <input type="text" id="modelSearchInput" placeholder="Type model (e.g. Castor 1000, Tangzu Wan'er, Chu II)..." oninput="filterModels(this.value)" onfocus="filterModels(this.value)">
-                            <div id="searchResults" class="search-results hidden"></div>
-                        </div>
-
-                        <div class="form-group">
-                            <label>Target Curve Profile</label>
-                            <select id="targetSelect" onchange="updateSquigGraph()">
-                                <option value="harman2019">Harman 2019 IE Target</option>
-                                <option value="ief">IEF Neutral Target</option>
-                                <option value="jm1">JM-1 Target</option>
-                                <option value="knowles">Knowles Target</option>
-                            </select>
-                        </div>
-
-                        <!-- Synchronized Preamp Control -->
-                        <div class="form-group">
-                            <label>Synchronized Preamp Gain (From Squig.link)</label>
-                            <div class="preamp-box">
-                                <input type="range" id="preampSlider" style="flex:1;" min="-20" max="5" step="0.5" value="0" oninput="syncPreamp(this.value)">
-                                <span id="preampVal" class="preamp-val">0.0 dB</span>
-                            </div>
-                        </div>
-
-                        <!-- FR Canvas Preview -->
-                        <div class="form-group">
-                            <label>Squig.link Response Preview</label>
-                            <canvas id="squigCanvas"></canvas>
-                            <div class="legend">
-                                <div class="legend-item"><div class="dot-iem"></div><span id="labelIem">IEM Response</span></div>
-                                <div class="legend-item"><div class="dot-target"></div><span>Selected Target</span></div>
-                            </div>
-                        </div>
-
-                        <div style="display:flex; justify-content: flex-end; gap:8px; margin-top:20px;">
-                            <button class="btn-secondary" onclick="closeProfileModal()">Cancel</button>
-                            <button class="btn-add-main" style="padding:10px 20px; font-size:14px;" onclick="saveProfile()">Save Profile</button>
+                <div id="stringModal" class="modal-backdrop hidden">
+                    <div class="modal">
+                        <div class="modal-title">Edit as string</div>
+                        <textarea id="stringInput" placeholder="GraphicEQ: 20 0; 25 -1.5; 31.5 -2.0; 40 -1.0; 50 0; 63 1.5; ..."></textarea>
+                        <div style="display:flex; justify-content:flex-end;">
+                            <button class="btn-secondary" onclick="closeModal('stringModal')">Cancel</button>
+                            <button class="btn-primary" onclick="applyStringEq()">Apply String</button>
                         </div>
                     </div>
                 </div>
 
                 <script>
+                    const isoFreqs = [20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 18000, 20000];
+                    
                     let profiles = [];
-                    let currentPreamp = 0.0;
-                    let selectedIemName = "Generic IEM";
+                    let editingProfileIndex = -1;
 
-                    // Database with KZ Castor hardware switch positions and popular Squig.link models
-                    const squigDatabase = [
-                        // KZ Castor Silver (Harman Edition) - Switches: Bass1 Bass2 Treble1 Treble2
-                        "KZ Castor Harman (0000 - All Switches Off)",
-                        "KZ Castor Harman (1000 - Bass +1dB)",
-                        "KZ Castor Harman (0100 - Bass +2dB)",
-                        "KZ Castor Harman (1100 - Bass +3dB)",
-                        "KZ Castor Harman (0010 - Treble +1dB)",
-                        "KZ Castor Harman (0001 - Treble +2dB)",
-                        "KZ Castor Harman (0011 - Treble +3dB)",
-                        "KZ Castor Harman (1010 - Bass +1dB / Treble +1dB)",
-                        "KZ Castor Harman (1111 - All Switches On)",
-                        // KZ Castor Black (Bass Enhanced Edition)
-                        "KZ Castor Bass (0000 - All Switches Off)",
-                        "KZ Castor Bass (1000 - Sub-Bass Boost 1)",
-                        "KZ Castor Bass (0100 - Sub-Bass Boost 2)",
-                        "KZ Castor Bass (1100 - Max Bass Boost)",
-                        "KZ Castor Bass (0010 - Treble Boost 1)",
-                        "KZ Castor Bass (0001 - Treble Boost 2)",
-                        "KZ Castor Bass (1111 - All Switches On)",
-                        // Popular Squig.link Database Entries
-                        "7Hz Salnotes Zero",
-                        "7Hz Zero:2",
-                        "7Hz Timeless",
-                        "7Hz Legato",
-                        "AFUL Performer 5",
-                        "AFUL Performer 8",
-                        "BLESSING 2 Dusk",
-                        "BLESSING 3",
-                        "DUNU Titan S",
-                        "DUNU SA6 MK2",
-                        "Kiwi Ears Cadenza",
-                        "Kiwi Ears Quintet",
-                        "KZ ZSN Pro X",
-                        "KZ PR2 Planar",
-                        "Letshuoer S12",
-                        "Letshuoer S12 Pro",
-                        "Moondrop Chu",
-                        "Moondrop Chu II",
-                        "Moondrop Aria",
-                        "Moondrop Aria 2",
-                        "Moondrop Kato",
-                        "Moondrop Variation",
-                        "Simgot EA500",
-                        "Simgot EA500 LM",
-                        "Simgot EM6L",
-                        "Simgot SuperMix 4",
-                        "Tangzu Wan'er S.G",
-                        "Tangzu Wan'er S.G SE",
-                        "Truthear Hola",
-                        "Truthear ZERO",
-                        "Truthear x Crinacle ZERO:RED",
-                        "Truthear Nova",
-                        "Truthear Hexa"
-                    ];
+                    let currentBands = new Array(32).fill(0.0);
+                    let currentPostGain = 0.0;
+                    let currentIemName = "Generic Target";
+                    let currentNodes = [];
 
-                    const isoFreqs = [20, 50, 100, 200, 500, 1000, 2000, 3000, 5000, 8000, 16000];
-                    const targets = {
-                        harman2019: [8.5, 7.8, 5.5, 2.0, 0.0, 0.0, 8.0, 7.0, 2.0, 0.0, -6.0],
-                        ief: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 7.0, 4.0, 1.0, 0.0, -8.0],
-                        jm1: [6.0, 5.5, 5.0, 2.0, 0.0, 0.0, 8.5, 6.0, 3.0, 1.0, -4.0],
-                        knowles: [5.0, 4.5, 4.0, 1.5, 0.0, 0.0, 12.0, 8.0, 6.0, 4.0, -2.0]
+                    const iemCurves = {
+                        "KZ Castor Harman (0000)": [6, 6, 5.5, 5, 4, 3, 2, 1, 0, 0, 0, 0, 0, 0, 1, 2, 4, 7, 9, 7, 4, 2, 3, 5, 4, 2, 0, -2, -4, -6, -8, -10],
+                        "KZ Castor Harman (1000)": [9, 9, 8.5, 8, 6.5, 5, 3, 1.5, 0, 0, 0, 0, 0, 0, 1, 2, 4, 7, 9, 7, 4, 2, 3, 5, 4, 2, 0, -2, -4, -6, -8, -10],
+                        "KZ Castor Harman (1111)": [10, 10, 9.5, 9, 7.5, 6, 4, 2, 1, 0, 0, 0, 0, 0, 2, 3, 5, 8, 10, 8, 5, 3, 4, 6, 5, 3, 1, -1, -3, -5, -7, -9],
+                        "KZ Castor Bass (1100)": [12, 12, 11, 10, 8, 6, 4, 2, 0, 0, 0, 0, 0, 0, 1, 2, 3, 6, 8, 6, 3, 1, 2, 4, 3, 1, -1, -3, -5, -7, -9, -11],
+                        "7Hz Salnotes Zero": [4, 4, 3.5, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 4, 6, 8, 6, 3, 1, 2, 4, 3, 1, -1, -3, -5, -7, -9, -11],
+                        "Moondrop Chu II": [7, 7, 6.5, 6, 4.5, 3, 1.5, 0, 0, 0, 0, 0, 0, 0, 1, 2, 4, 7, 9, 7, 4, 2, 3, 5, 4, 2, 0, -2, -4, -6, -8, -10]
                     };
 
-                    function openProfileModal() {
-                        document.getElementById('profileName').value = '';
-                        document.getElementById('modelSearchInput').value = '';
-                        document.getElementById('searchResults').classList.add('hidden');
-                        document.getElementById('profileModal').classList.remove('hidden');
-                        updateSquigGraph();
+                    const targetCurves = {
+                        "Harman 2019 IE": [9, 9, 8, 6.5, 5, 3.5, 2, 1, 0, 0, 0, 0, 0, 0, 1, 2, 4, 7, 9, 8, 5, 3, 4, 6, 5, 3, 1, -1, -3, -5, -7, -9],
+                        "IEF Neutral": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 4, 7, 8, 6, 3, 1, 2, 4, 3, 1, -1, -3, -5, -7, -9, -11],
+                        "JM-1 Target": [6, 6, 5.5, 4.5, 3.5, 2.5, 1.5, 0.5, 0, 0, 0, 0, 0, 0, 1, 2, 4, 7, 8.5, 7, 4, 2, 3, 5, 4, 2, 0, -2, -4, -6, -8, -10]
+                    };
+
+                    function renderProfilesList() {
+                        const container = document.getElementById('profilesList');
+                        document.getElementById('profileCount').innerText = profiles.length;
+                        container.innerHTML = '';
+                        if(profiles.length === 0) {
+                            container.innerHTML = '<div style="font-size:13px; color:var(--text-dim); text-align:center; padding:16px;">No profiles added yet</div>';
+                            return;
+                        }
+                        profiles.forEach((p, i) => {
+                            const item = document.createElement('div');
+                            item.className = 'profile-item';
+                            item.innerHTML = 
+                                '<div class="profile-info" onclick="openMagnitudeEditor(' + i + ')">' +
+                                    '<div class="profile-name">' + p.name + '</div>' +
+                                    '<div class="profile-sub">' + p.iem + ' | Post gain: ' + p.postGain.toFixed(2) + 'dB</div>' +
+                                '</div>' +
+                                '<label class="switch">' +
+                                    '<input type="checkbox" ' + (p.active ? 'checked' : '') + ' onchange="toggleProfileActive(' + i + ')">' +
+                                    '<span class="slider"></span>' +
+                                '</label>';
+                            container.appendChild(item);
+                        });
                     }
 
-                    function closeProfileModal() {
-                        document.getElementById('profileModal').classList.add('hidden');
+                    function toggleProfileActive(idx) {
+                        const newState = !profiles[idx].active;
+                        profiles.forEach(p => p.active = false);
+                        profiles[idx].active = newState;
+                        renderProfilesList();
+                        syncToAndroidService();
                     }
 
-                    function filterModels(query) {
-                        const resultsContainer = document.getElementById('searchResults');
-                        resultsContainer.innerHTML = '';
+                    function showProfilesScreen() {
+                        document.getElementById('screenMagnitude').classList.add('hidden');
+                        document.getElementById('screenProfiles').classList.remove('hidden');
+                    }
 
-                        const filtered = squigDatabase.filter(m => m.toLowerCase().includes(query.toLowerCase()));
+                    function openMagnitudeEditor(index) {
+                        editingProfileIndex = index;
+                        if (index >= 0) {
+                            const p = profiles[index];
+                            currentBands = [...p.bands];
+                            currentPostGain = p.postGain;
+                            currentIemName = p.iem;
+                            currentNodes = p.nodes ? [...p.nodes] : [];
+                        } else {
+                            if (profiles.length >= 5) {
+                                alert("Maximum limit of 5 profiles reached.");
+                                return;
+                            }
+                            currentBands = new Array(32).fill(0.0);
+                            currentPostGain = 0.0;
+                            currentIemName = "New Target Profile";
+                            currentNodes = [];
+                        }
 
-                        if (filtered.length === 0) {
-                            resultsContainer.classList.add('hidden');
+                        document.getElementById('postGainSlider').value = currentPostGain;
+                        document.getElementById('postGainVal').innerText = currentPostGain.toFixed(2) + "dB";
+
+                        document.getElementById('screenProfiles').classList.add('hidden');
+                        document.getElementById('screenMagnitude').classList.remove('hidden');
+                        renderNodeList();
+                        renderMagnitudeEditor();
+                    }
+
+                    function renderNodeList() {
+                        const container = document.getElementById('nodeListContainer');
+                        if (currentNodes.length === 0) {
+                            container.innerHTML = 
+                                '<div class="node-box-empty">' +
+                                    '<div class="node-dots-icon">◦—◦</div>' +
+                                    '<span>No nodes defined</span>' +
+                                '</div>';
                             return;
                         }
 
-                        filtered.forEach(model => {
-                            const div = document.createElement('div');
-                            div.className = 'search-item';
-                            div.innerText = model;
-                            div.onclick = function() {
-                                selectModel(model);
-                            };
-                            resultsContainer.appendChild(div);
+                        let html = '<div class="node-grid-list">';
+                        currentNodes.forEach(node => {
+                            const freqLabel = node.freq >= 1000 ? (node.freq/1000).toFixed(1) + 'k' : node.freq;
+                            html += '<div class="node-chip"><span>' + freqLabel + ' Hz</span><span style="color:var(--accent);">' + node.gain.toFixed(1) + 'dB</span></div>';
                         });
-
-                        resultsContainer.classList.remove('hidden');
+                        html += '</div>';
+                        container.innerHTML = html;
                     }
 
-                    function selectModel(modelName) {
-                        document.getElementById('modelSearchInput').value = modelName;
-                        document.getElementById('searchResults').classList.add('hidden');
-                        selectedIemName = modelName;
-                        updateSquigGraph();
+                    function renderMagnitudeEditor() {
+                        const grid = document.getElementById('eqSlidersGrid');
+                        grid.innerHTML = '';
+                        isoFreqs.forEach((f, i) => {
+                            const col = document.createElement('div');
+                            col.className = 'eq-col';
+                            const label = f >= 1000 ? (f/1000) + 'k' : f;
+                            col.innerHTML = 
+                                '<span class="eq-val">' + currentBands[i].toFixed(1) + '</span>' +
+                                '<input type="range" class="eq-slider" min="-12" max="12" step="0.5" value="' + currentBands[i] + '" oninput="updateBand(' + i + ', this.value)">' +
+                                '<span class="eq-freq">' + label + '</span>';
+                            grid.appendChild(col);
+                        });
+                        drawPreviewGraph();
                     }
 
-                    function syncPreamp(val) {
-                        currentPreamp = parseFloat(val);
-                        document.getElementById('preampSlider').value = currentPreamp;
-                        document.getElementById('preampVal').innerText = (currentPreamp > 0 ? "+" : "") + currentPreamp.toFixed(1) + " dB";
-                        drawSquigGraph();
+                    function updateBand(idx, val) {
+                        currentBands[idx] = parseFloat(val);
+                        currentNodes = [];
+                        isoFreqs.forEach((f, i) => {
+                            if (currentBands[i] !== 0) {
+                                currentNodes.push({ freq: f, gain: currentBands[i] });
+                            }
+                        });
+                        renderNodeList();
+                        renderMagnitudeEditor();
+                        syncToAndroidService();
                     }
 
-                    function updateSquigGraph() {
-                        document.getElementById('labelIem').innerText = selectedIemName;
-
-                        const targetKey = document.getElementById('targetSelect').value;
-                        const targetVals = targets[targetKey] || targets.harman2019;
-                        const maxGainNeeded = Math.max(...targetVals);
-                        
-                        const computedPreamp = maxGainNeeded > 0 ? -maxGainNeeded : 0.0;
-                        syncPreamp(computedPreamp);
+                    function updatePostGain(val) {
+                        currentPostGain = parseFloat(val);
+                        document.getElementById('postGainVal').innerText = currentPostGain.toFixed(2) + "dB";
+                        syncToAndroidService();
                     }
 
-                    function drawSquigGraph() {
-                        const canvas = document.getElementById('squigCanvas');
+                    function drawPreviewGraph() {
+                        const canvas = document.getElementById('previewCanvas');
                         const ctx = canvas.getContext('2d');
                         canvas.width = canvas.offsetWidth;
                         canvas.height = canvas.offsetHeight;
-
-                        const w = canvas.width;
-                        const h = canvas.height;
-
+                        const w = canvas.width, h = canvas.height;
                         ctx.clearRect(0, 0, w, h);
 
-                        function logX(freq) {
-                            return ((Math.log10(freq) - Math.log10(20)) / (Math.log10(20000) - Math.log10(20))) * w;
+                        ctx.strokeStyle = '#ded7e3';
+                        ctx.lineWidth = 1;
+                        for(let y=20; y<h; y+=30) {
+                            ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
                         }
 
-                        function valY(val) {
-                            return h - (((val - (-15)) / (25 - (-15))) * h);
-                        }
-
-                        const targetKey = document.getElementById('targetSelect').value;
-                        const targetVals = targets[targetKey] || targets.harman2019;
-
-                        ctx.strokeStyle = '#ef4444';
-                        ctx.lineWidth = 2;
+                        ctx.strokeStyle = '#5e399b';
+                        ctx.lineWidth = 2.5;
                         ctx.beginPath();
                         isoFreqs.forEach((f, i) => {
-                            const x = logX(f);
-                            const y = valY(targetVals[i]);
+                            const x = ((Math.log10(f) - Math.log10(20)) / (Math.log10(20000) - Math.log10(20))) * w;
+                            const y = h/2 - (currentBands[i] / 12) * (h/2 - 15);
                             if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
                         });
                         ctx.stroke();
+                    }
+
+                    function resetCurrentProfile() {
+                        currentBands.fill(0.0);
+                        currentPostGain = 0.0;
+                        currentNodes = [];
+                        document.getElementById('postGainSlider').value = 0;
+                        document.getElementById('postGainVal').innerText = "0.00dB";
+                        renderNodeList();
+                        renderMagnitudeEditor();
+                        syncToAndroidService();
+                    }
+
+                    function openAutoEqModal() {
+                        document.getElementById('autoEqModal').classList.remove('hidden');
+                        updateAutoEqCurves();
+                    }
+
+                    function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
+
+                    function updateAutoEqCurves() {
+                        const iemKey = document.getElementById('autoEqIem').value;
+                        const targetKey = document.getElementById('autoEqTarget').value;
+                        const iemData = iemCurves[iemKey] || iemCurves["KZ Castor Harman (0000)"];
+                        const targetData = targetCurves[targetKey] || targetCurves["Harman 2019 IE"];
+
+                        const canvas = document.getElementById('autoEqCanvas');
+                        const ctx = canvas.getContext('2d');
+                        canvas.width = canvas.offsetWidth;
+                        canvas.height = canvas.offsetHeight;
+                        const w = canvas.width, h = canvas.height;
+                        ctx.clearRect(0, 0, w, h);
 
                         ctx.strokeStyle = '#3b82f6';
                         ctx.lineWidth = 2;
                         ctx.beginPath();
                         isoFreqs.forEach((f, i) => {
-                            const x = logX(f);
-                            const iemVal = targetVals[i] * 0.4 + (i % 2 === 0 ? 2 : -2);
-                            const y = valY(iemVal);
+                            const x = ((Math.log10(f) - Math.log10(20)) / (Math.log10(20000) - Math.log10(20))) * w;
+                            const y = h/2 - (iemData[i] / 15) * (h/2 - 10);
+                            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+                        });
+                        ctx.stroke();
+
+                        ctx.strokeStyle = '#ef4444';
+                        ctx.lineWidth = 2;
+                        ctx.beginPath();
+                        isoFreqs.forEach((f, i) => {
+                            const x = ((Math.log10(f) - Math.log10(20)) / (Math.log10(20000) - Math.log10(20))) * w;
+                            const y = h/2 - (targetData[i] / 15) * (h/2 - 10);
                             if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
                         });
                         ctx.stroke();
                     }
 
-                    function saveProfile() {
-                        const name = document.getElementById('profileName').value || selectedIemName + " Profile";
-                        const targetKey = document.getElementById('targetSelect').value;
+                    function importAutoEqValues() {
+                        const iemKey = document.getElementById('autoEqIem').value;
+                        const targetKey = document.getElementById('autoEqTarget').value;
+                        const iemData = iemCurves[iemKey] || iemCurves["KZ Castor Harman (0000)"];
+                        const targetData = targetCurves[targetKey] || targetCurves["Harman 2019 IE"];
 
-                        profiles.push({
-                            name: name,
-                            iem: selectedIemName,
-                            target: targetKey,
-                            preamp: currentPreamp
+                        currentIemName = iemKey;
+                        currentNodes = [];
+                        isoFreqs.forEach((f, i) => {
+                            const delta = targetData[i] - iemData[i];
+                            currentBands[i] = Math.min(Math.max(delta, -12), 12);
+                            if (Math.abs(currentBands[i]) > 0.1) {
+                                currentNodes.push({ freq: f, gain: currentBands[i] });
+                            }
                         });
 
-                        closeProfileModal();
-                        renderProfileList();
+                        closeModal('autoEqModal');
+                        renderNodeList();
+                        renderMagnitudeEditor();
+                        syncToAndroidService();
                     }
 
-                    function renderProfileList() {
-                        const container = document.getElementById('profileList');
-                        const initialView = document.getElementById('initialView');
+                    function openStringModal() { document.getElementById('stringModal').classList.remove('hidden'); }
 
-                        if (profiles.length === 0) {
-                            initialView.classList.remove('hidden');
-                            container.classList.add('hidden');
-                            return;
+                    function applyStringEq() {
+                        const str = document.getElementById('stringInput').value;
+                        if(str.includes("GraphicEQ:")) {
+                            currentBands.fill(0.0);
+                            currentNodes = [];
+                            const pairs = str.replace("GraphicEQ:", "").split(";");
+                            pairs.forEach(pair => {
+                                const parts = pair.trim().split(" ");
+                                if(parts.length === 2) {
+                                    const f = parseFloat(parts[0]);
+                                    const g = parseFloat(parts[1]);
+                                    const closestIdx = isoFreqs.reduce((best, curr, i) => Math.abs(curr - f) < Math.abs(isoFreqs[best] - f) ? i : best, 0);
+                                    currentBands[closestIdx] = g;
+                                    currentNodes.push({ freq: isoFreqs[closestIdx], gain: g });
+                                }
+                            });
                         }
-
-                        initialView.classList.add('hidden');
-                        container.classList.remove('hidden');
-                        container.innerHTML = '';
-
-                        profiles.forEach((p, i) => {
-                            const card = document.createElement('div');
-                            card.className = 'profile-card';
-                            card.innerHTML = 
-                                '<div>' +
-                                    '<div class="profile-name">' + p.name + '</div>' +
-                                    '<div class="profile-sub">Model: ' + p.iem + ' | Target: ' + p.target.toUpperCase() + ' | Preamp: ' + p.preamp.toFixed(1) + ' dB</div>' +
-                                '</div>' +
-                                '<button class="btn-add-main" style="padding: 8px 16px; font-size: 12px;" onclick="openProfileModal()">Edit</button>';
-                            container.appendChild(card);
-                        });
+                        closeModal('stringModal');
+                        renderNodeList();
+                        renderMagnitudeEditor();
+                        syncToAndroidService();
                     }
 
-                    function openSettings() {
-                        alert("Settings: Audio routing and global options.");
+                    function saveMagnitudeProfile() {
+                        if (editingProfileIndex >= 0) {
+                            profiles[editingProfileIndex].bands = [...currentBands];
+                            profiles[editingProfileIndex].postGain = currentPostGain;
+                            profiles[editingProfileIndex].iem = currentIemName;
+                            profiles[editingProfileIndex].nodes = [...currentNodes];
+                        } else {
+                            profiles.forEach(p => p.active = false);
+                            profiles.push({
+                                name: currentIemName,
+                                iem: currentIemName,
+                                bands: [...currentBands],
+                                postGain: currentPostGain,
+                                nodes: [...currentNodes],
+                                active: true
+                            });
+                        }
+                        showProfilesScreen();
+                        renderProfilesList();
+                        syncToAndroidService();
                     }
+
+                    async function syncToAndroidService() {
+                        const activeProfile = profiles.find(p => p.active);
+                        const gainsToSend = activeProfile ? activeProfile.bands : currentBands;
+                        const postGainToSend = activeProfile ? activeProfile.postGain : currentPostGain;
+
+                        try {
+                            await fetch('/api/apply-eq', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    active: true,
+                                    postGain: postGainToSend,
+                                    gains: gainsToSend
+                                })
+                            });
+                        } catch(e) {}
+                    }
+
+                    renderProfilesList();
                 </script>
             </body>
             </html>
@@ -492,6 +568,35 @@ class WebServer(private val port: Int = 8080) {
             val os: OutputStream = exchange.responseBody
             os.write(bytes)
             os.close()
+        }
+    }
+
+    class ApplyEqHandler(private val context: Context?) : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            if (exchange.requestMethod.equals("POST", ignoreCase = true)) {
+                val reader = BufferedReader(InputStreamReader(exchange.requestBody))
+                val body = reader.readText()
+                reader.close()
+
+                println("\n>>> [API RECEIVED FROM WEB DASHBOARD] <<<")
+                println("Payload: $body\n")
+
+                if (context != null) {
+                    val intent = Intent(context, AudioEqualizerService::class.java)
+                    intent.putExtra("AUDIO_SESSION_ID", 0)
+                    intent.putExtra("PREAMP_GAIN", -3.0f)
+                    context.startService(intent)
+                }
+
+                val response = "{\"status\":\"success\"}"
+                exchange.responseHeaders.set("Content-Type", "application/json")
+                exchange.sendResponseHeaders(200, response.toByteArray().size.toLong())
+                exchange.responseBody.write(response.toByteArray())
+                exchange.responseBody.close()
+            } else {
+                exchange.sendResponseHeaders(405, 0)
+                exchange.responseBody.close()
+            }
         }
     }
 }
